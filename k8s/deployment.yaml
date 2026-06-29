@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+  namespace: tam-dashboard
+  labels:
+    app: dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dashboard
+  template:
+    metadata:
+      labels:
+        app: dashboard
+    spec:
+      volumes:
+        - name: dashboard-data
+          persistentVolumeClaim:
+            claimName: dashboard-data
+      containers:
+        # ── Frontend: static React app served by nginx ──────
+        - name: frontend
+          image: gcr.io/tam-aaron-hubbart/dashboard-frontend:latest
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+        # ── Backend: auth + Anthropic proxy ─────────────────
+        - name: proxy
+          image: gcr.io/tam-aaron-hubbart/dashboard-proxy:latest
+          ports:
+            - containerPort: 3001
+          volumeMounts:
+            - name: dashboard-data
+              mountPath: /data
+          env:
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dashboard-secrets
+                  key: ANTHROPIC_API_KEY
+            - name: AZURE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: dashboard-secrets
+                  key: AZURE_CLIENT_ID
+            - name: AZURE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: dashboard-secrets
+                  key: AZURE_CLIENT_SECRET
+            - name: AZURE_TENANT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: dashboard-secrets
+                  key: AZURE_TENANT_ID
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: dashboard-secrets
+                  key: SESSION_SECRET
+            - name: ASANA_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: dashboard-secrets
+                  key: ASANA_TOKEN
+            - name: AZURE_REDIRECT_URI
+              value: "https://dashboard.es-sandbox.com/auth/callback"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /auth/status
+              port: 3001
+            initialDelaySeconds: 5
+            periodSeconds: 10

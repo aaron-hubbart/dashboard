@@ -1,0 +1,33 @@
+steps:
+  # ── Build frontend ────────────────────────────────────────
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --no-cache
+      - -t
+      - gcr.io/tam-aaron-hubbart/dashboard-frontend:latest
+      - -f
+      - Dockerfile
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    args: [push, gcr.io/tam-aaron-hubbart/dashboard-frontend:latest]
+
+  # ── Build proxy ───────────────────────────────────────────
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --no-cache
+      - --build-arg
+      - APP_VERSION=$BUILD_ID
+      - -t
+      - gcr.io/tam-aaron-hubbart/dashboard-proxy:latest
+      - -f
+      - proxy/Dockerfile
+      - proxy
+
+  - name: gcr.io/cloud-builders/docker
+    args: [push, gcr.io/tam-aaron-hubbart/dashboard-proxy:latest]
+
+options:
+  logging: CLOUD_LOGGING_ONLY
