@@ -21,9 +21,6 @@ const {
   APP_VERSION = "dev",
   ASANA_TOKEN = "",
   ZOOM_TOKEN = "",
-  ZOOM_CLIENT_ID = "",
-  ZOOM_CLIENT_SECRET = "",
-  ZOOM_REDIRECT_URI = "https://dashboard.es-sandbox.com/auth/zoom/callback",
   BLINKO_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic3VwZXJhZG1pbiIsIm5hbWUiOiJhaHViYmFydCIsInN1YiI6IjEiLCJleHAiOjQ5MjI5MDM3ODIsImlhdCI6MTc2OTMwMzc4Mn0.BeCaFOP7Gb4FlaNbKuXYaRozy4EYgM7R20EvSQ3ByQE",
   BLINKO_URL = "http://35.225.239.191:1111",
   ZOOM_WEBHOOK_SECRET = "",
@@ -100,7 +97,6 @@ app.get("/api/admin/status", requireAuth, (req, res) => {
     m365SignedIn: !!req.session.accessToken,
     asanaTokenSet: !!ASANA_TOKEN,
     zoomTokenSet: !!ZOOM_TOKEN,
-    zoomOAuthConnected: !!req.session.zoomAccessToken,
     blinkoTokenSet: !!BLINKO_TOKEN,
 	zoomWebhookSet: !!ZOOM_WEBHOOK_SECRET,
   });
@@ -201,65 +197,6 @@ app.get("/auth/callback", async (req, res) => {
 });
 
 
-// ── Zoom OAuth ──────────────────────────────────────────────────
-app.get("/auth/zoom/login", (req, res) => {
-  if (!ZOOM_CLIENT_ID) return res.status(500).json({ error: "ZOOM_CLIENT_ID not configured" });
-  const params = new URLSearchParams({
-    client_id: ZOOM_CLIENT_ID,
-    response_type: "code",
-    redirect_uri: ZOOM_REDIRECT_URI,
-  });
-  res.redirect(`https://zoom.us/oauth/authorize?${params}`);
-});
-
-app.get("/auth/zoom/callback", async (req, res) => {
-  const { code, error } = req.query;
-  if (error) return res.status(400).send(`Zoom auth error: ${error}`);
-  const credentials = Buffer.from(`${ZOOM_CLIENT_ID}:${ZOOM_CLIENT_SECRET}`).toString("base64");
-  const tokenRes = await fetch("https://zoom.us/oauth/token", {
-    method: "POST",
-    headers: { Authorization: `Basic ${credentials}`, "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ code, grant_type: "authorization_code", redirect_uri: ZOOM_REDIRECT_URI }),
-  });
-  const tokens = await tokenRes.json();
-  if (tokens.error) return res.status(400).send(`Zoom token error: ${tokens.error_description}`);
-  req.session.zoomAccessToken = tokens.access_token;
-  req.session.zoomRefreshToken = tokens.refresh_token;
-  req.session.zoomExpiresAt = Date.now() + tokens.expires_in * 1000;
-  req.session.save(err => {
-    if (err) console.error("Zoom session save error:", err);
-    res.redirect("/");
-  });
-});
-
-app.get("/auth/zoom/status", requireAuth, (req, res) => {
-  res.json({ connected: !!req.session.zoomAccessToken });
-});
-
-app.get("/auth/zoom/disconnect", requireAuth, (req, res) => {
-  delete req.session.zoomAccessToken;
-  delete req.session.zoomRefreshToken;
-  delete req.session.zoomExpiresAt;
-  res.json({ ok: true });
-});
-
-async function refreshZoomIfNeeded(req) {
-  if (!req.session.zoomAccessToken) return;
-  if (!req.session.zoomExpiresAt || Date.now() < req.session.zoomExpiresAt - 60000) return;
-  if (!ZOOM_CLIENT_ID || !ZOOM_CLIENT_SECRET) return;
-  const credentials = Buffer.from(`${ZOOM_CLIENT_ID}:${ZOOM_CLIENT_SECRET}`).toString("base64");
-  const tokenRes = await fetch("https://zoom.us/oauth/token", {
-    method: "POST",
-    headers: { Authorization: `Basic ${credentials}`, "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: req.session.zoomRefreshToken }),
-  });
-  const tokens = await tokenRes.json();
-  if (!tokens.error) {
-    req.session.zoomAccessToken = tokens.access_token;
-    req.session.zoomRefreshToken = tokens.refresh_token ?? req.session.zoomRefreshToken;
-    req.session.zoomExpiresAt = Date.now() + tokens.expires_in * 1000;
-  }
-}
 app.get("/auth/logout", (req, res) => {
   req.session.destroy();
   res.redirect(`https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/logout?post_logout_redirect_uri=https://dashboard.es-sandbox.com`);
@@ -703,7 +640,6 @@ app.post("/api/zoom/webhook", express.raw({ type: "application/json" }), async (
 // ── Anthropic proxy ────────────────────────────────────────
 app.post("/api/claude", requireAuth, async (req, res) => {
   await refreshIfNeeded(req);
-  await refreshZoomIfNeeded(req);
   const body = { ...req.body };
   const m365Mode = req.headers["x-m365-mode"] || "direct";
   console.log(`/api/claude model=${body.model} mcp=${JSON.stringify((body.mcp_servers||[]).map(s=>s.name))} m365=${m365Mode}`);

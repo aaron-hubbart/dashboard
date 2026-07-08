@@ -195,7 +195,6 @@ export default function App() {
   const [selectedRecording, setSelectedRecording] = useState(null);
   const [recordingAssets, setRecordingAssets] = useState(null); // { summary, transcript }
   const [recordingsAssetsTab, setRecordingsAssetsTab] = useState("summary");
-  const [zoomOAuthConnected, setZoomOAuthConnected] = useState(false);
 
   // ── Admin ──────────────────────────────────────────────────
   const [adminStatus, setAdminStatus] = useState(null);
@@ -350,14 +349,6 @@ export default function App() {
     scheduleSave(data);
   }, [dark, goals, projects, meetings, meetingMeta, buckets, timeEntries, asanaMode, m365Mode, selectedPortfolios, portfolios, dismissedSuggestions, excludedCategories, outlookCategories, timezone, customers, customerColumns]);
 
-  // Zoom OAuth status check — must be above the auth-gate early returns.
-  useEffect(() => {
-    if (meetingsSubTab !== "recordings") return;
-    fetch("/auth/zoom/status", { credentials: "include" })
-      .then(r => r.json())
-      .then(d => setZoomOAuthConnected(d.connected || false))
-      .catch(() => {});
-  }, [meetingsSubTab]);
 
   // keep newEntry.date initialized to today on load
 
@@ -562,26 +553,6 @@ export default function App() {
   }
 
   async function runStepZoom(meeting) {
-    // Always do a live auth check so this works whether or not the Recordings tab was opened.
-    let isZoomConnected = zoomOAuthConnected;
-    try {
-      const r = await fetch("/auth/zoom/status", { credentials: "include" });
-      const d = await r.json();
-      isZoomConnected = d.connected || false;
-      if (isZoomConnected !== zoomOAuthConnected) setZoomOAuthConnected(isZoomConnected);
-    } catch { /* use cached state */ }
-
-    if (!isZoomConnected) {
-      setPanelStep(meeting.id, "zoom", {
-        status: "needs_input",
-        message: "Zoom not connected.",
-        zoomNotConnected: true,
-        candidates: [],
-        urlInput: "",
-      });
-      return "pending";
-    }
-
     setPanelStep(meeting.id, "zoom", { status: "running", message: "Searching Zoom for this meeting…" });
 
     try {
@@ -614,7 +585,6 @@ export default function App() {
       setPanelStep(meeting.id, "zoom", {
         status: "needs_input",
         message: "No Zoom recording found for this meeting. Paste a notes URL if you have one, or skip.",
-        zoomNotConnected: false,
         candidates: [],
         urlInput: "",
       });
@@ -625,7 +595,6 @@ export default function App() {
       setPanelStep(meeting.id, "zoom", {
         status: "needs_input",
         message: "Zoom lookup failed. Paste a notes URL if you have one, or skip.",
-        zoomNotConnected: false,
         candidates: [],
         urlInput: "",
       });
@@ -1461,20 +1430,6 @@ Be specific and practical. If you recognize the company, include relevant contex
 
                           {/* Zoom needs-input UI */}
                           {def.key === "zoom" && needsInput && (() => {
-                            if (s.zoomNotConnected) return (
-                              <div style={{ marginLeft: 21, marginTop: 6, background: surface2, borderRadius: 6, padding: "8px 10px", fontSize: 11 }}>
-                                <p style={{ margin: "0 0 7px", color: ts }}>Connect Zoom to auto-fetch recordings and summaries.</p>
-                                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                                  <a href="/auth/zoom/login" style={{ ...btn(accent), textDecoration: "none", fontSize: 11, padding: "4px 10px" }}>
-                                    <i className="ti ti-brand-zoom" /> Connect Zoom
-                                  </a>
-                                  <button onClick={() => resolveZoomStep(m, { type: "skip" })}
-                                    style={{ ...btn(), fontSize: 10, padding: "3px 8px", color: tt }}>
-                                    Skip
-                                  </button>
-                                </div>
-                              </div>
-                            );
                             return (
                               <div style={{ marginLeft: 21, marginTop: 6, background: surface2, borderRadius: 6, padding: "8px 10px", fontSize: 11 }}>
                                 <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
@@ -1542,14 +1497,10 @@ Be specific and practical. If you recognize the company, include relevant contex
 
             {/* ── Recordings sub-tab ── */}
             {meetingsSubTab === "recordings" && (() => {
-              if (!zoomOAuthConnected) return (
-                <div style={{ ...card, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, minHeight: 180, textAlign: "center" }}>
-                  <i className="ti ti-brand-zoom" style={{ fontSize: 28, color: "#2D8CFF" }} />
-                  <div style={{ fontSize: 14, fontWeight: 500, color: tp }}>Connect Zoom</div>
-                  <div style={{ fontSize: 12, color: ts, maxWidth: 320 }}>Sign in with Zoom to browse cloud recordings, summaries, and transcripts via Claude.</div>
-                  <a href="/auth/zoom/login" style={{ ...btn(accent), textDecoration: "none", marginTop: 4 }}>
-                    <i className="ti ti-login" /> Connect Zoom
-                  </a>
+              if (adminStatus && !adminStatus.zoomTokenSet) return (
+                <div style={{ ...card, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, minHeight: 140, textAlign: "center" }}>
+                  <i className="ti ti-brand-zoom" style={{ fontSize: 22, color: ts }} />
+                  <div style={{ fontSize: 13, color: ts }}>Zoom not configured. Add <code style={{ background: surface2, padding: "1px 5px", borderRadius: 3, fontSize: 11 }}>ZOOM_TOKEN</code> to the k8s secret to enable recordings.</div>
                 </div>
               );
               return (
@@ -1558,10 +1509,7 @@ Be specific and practical. If you recognize the company, include relevant contex
                   <div style={{ ...card, width: 280, flexShrink: 0, marginBottom: 0 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                       <span style={{ fontSize: 14, fontWeight: 600, color: tp }}>Cloud Recordings</span>
-                      <button style={{ ...btn(), fontSize: 11, padding: "2px 8px", color: ts }}
-                        onClick={async () => { await fetch("/auth/zoom/disconnect", { credentials: "include" }); setZoomOAuthConnected(false); setRecordings([]); setSelectedRecording(null); setRecordingAssets(null); }}>
-                        Disconnect
-                      </button>
+
                     </div>
                     <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
                       <div style={{ flex: 1 }}>
