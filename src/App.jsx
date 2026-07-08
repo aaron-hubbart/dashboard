@@ -195,6 +195,7 @@ export default function App() {
   const [selectedRecording, setSelectedRecording] = useState(null);
   const [recordingAssets, setRecordingAssets] = useState(null); // { summary, transcript }
   const [recordingsAssetsTab, setRecordingsAssetsTab] = useState("summary");
+  const [recordingDebug, setRecordingDebug] = useState(null);
 
   // ── Admin ──────────────────────────────────────────────────
   const [adminStatus, setAdminStatus] = useState(null);
@@ -504,17 +505,52 @@ export default function App() {
     setRecordings([]);
     setSelectedRecording(null);
     setRecordingAssets(null);
+    setRecordingDebug(null);
     try {
-      const result = await agentCall(
-        `List my Zoom cloud recordings from ${recordingsRange.from} to ${recordingsRange.to}. ` +
-        `Use recordings_list with userId="me". ` +
-        `Return a JSON array of objects with fields: meetingId (string), topic (string), startTime (ISO string), duration (number, minutes). ` +
-        `If there are no recordings return an empty array [].`,
+      const raw = await callClaude(
+        [{ role: "user", content:
+          `List my Zoom cloud recordings from ${recordingsRange.from} to ${recordingsRange.to}. ` +
+          `Use recordings_list with userId="me". ` +
+          `Return a JSON array of objects with fields: meetingId (string), topic (string), startTime (ISO string), duration (number, minutes). ` +
+          `If there are no recordings return an empty array [].`
+        }],
+        `You are a productivity assistant. Execute the instruction using available MCP tools.\nRespond ONLY with valid JSON (no markdown fences, no preamble):\n{"success": true, "data": <result>} or {"success": false, "error": "reason"}`,
         [{ type: "url", url: ZOOM_MCP, name: "zoom-mcp" }]
       );
-      setRecordings(Array.isArray(result.data) ? result.data : []);
+
+      const blocks   = raw.content || [];
+      const textBlob = blocks.filter(b => b.type === "text").map(b => b.text).join("").trim();
+      const toolCalls = blocks.filter(b => b.type === "mcp_tool_use")
+        .map(b => `${b.name}(${JSON.stringify(b.input)})`);
+      const toolResults = blocks.filter(b => b.type === "mcp_tool_result")
+        .map(b => (b.content || []).map(c => c.text || JSON.stringify(c)).join("\n"));
+
+      let parsed = null;
+      let parseError = null;
+      try { parsed = JSON.parse(textBlob.replace(/\`\`\`json|\`\`\`/g, "").trim()); }
+      catch (e) { parseError = e.message; }
+
+      setRecordingDebug({
+        stopReason: raw.stop_reason,
+        blockTypes: blocks.map(b => b.type),
+        toolCalls,
+        toolResults,
+        textBlob: textBlob.slice(0, 800),
+        parsed,
+        parseError,
+        apiError: raw.error,
+      });
+
+      console.log("[Recordings] raw response:", raw);
+      console.log("[Recordings] tool calls:", toolCalls);
+      console.log("[Recordings] tool results:", toolResults);
+      console.log("[Recordings] text:", textBlob);
+      console.log("[Recordings] parsed:", parsed);
+
+      setRecordings(Array.isArray(parsed?.data) ? parsed.data : []);
     } catch (e) {
       console.error("Recordings fetch error:", e);
+      setRecordingDebug({ fetchError: e.message });
       setRecordings([]);
     } finally {
       setLoad("recordings", false);
@@ -1529,6 +1565,31 @@ Be specific and practical. If you recognize the company, include relevant contex
                       onClick={fetchRecordings} disabled={loading.recordings}>
                       {loading.recordings ? <><Spinner /> Fetching…</> : <><i className="ti ti-refresh" /> Fetch Recordings</>}
                     </button>
+                    {recordingDebug && (
+                      <details style={{ marginBottom: 10, fontSize: 11, color: ts }}>
+                        <summary style={{ cursor: "pointer", color: tt, userSelect: "none" }}>Debug info</summary>
+                        <div style={{ background: surface2, borderRadius: 5, padding: "8px 10px", marginTop: 6, lineHeight: 1.6, wordBreak: "break-all", maxHeight: 340, overflowY: "auto" }}>
+                          {recordingDebug.fetchError && <p style={{ color: "#ef4444", margin: "0 0 4px" }}>Fetch error: {recordingDebug.fetchError}</p>}
+                          {recordingDebug.apiError && <p style={{ color: "#ef4444", margin: "0 0 4px" }}>API error: {JSON.stringify(recordingDebug.apiError)}</p>}
+                          {recordingDebug.stopReason && <p style={{ margin: "0 0 4px" }}>stop_reason: <code>{recordingDebug.stopReason}</code></p>}
+                          {recordingDebug.blockTypes && <p style={{ margin: "0 0 4px" }}>blocks: {recordingDebug.blockTypes.join(", ") || "(none)"}</p>}
+                          {recordingDebug.toolCalls?.length > 0 && (
+                            <div style={{ margin: "4px 0" }}>
+                              <strong>Tool calls:</strong>
+                              {recordingDebug.toolCalls.map((t, i) => <pre key={i} style={{ margin: "2px 0", whiteSpace: "pre-wrap", fontSize: 10 }}>{t}</pre>)}
+                            </div>
+                          )}
+                          {recordingDebug.toolResults?.length > 0 && (
+                            <div style={{ margin: "4px 0" }}>
+                              <strong>Tool results:</strong>
+                              {recordingDebug.toolResults.map((r, i) => <pre key={i} style={{ margin: "2px 0", whiteSpace: "pre-wrap", fontSize: 10 }}>{r.slice(0, 600)}</pre>)}
+                            </div>
+                          )}
+                          {recordingDebug.textBlob && <div style={{ margin: "4px 0" }}><strong>Claude text:</strong><pre style={{ whiteSpace: "pre-wrap", fontSize: 10, margin: "2px 0" }}>{recordingDebug.textBlob}</pre></div>}
+                          {recordingDebug.parseError && <p style={{ color: "#f59e0b", margin: "4px 0 0" }}>Parse error: {recordingDebug.parseError}</p>}
+                        </div>
+                      </details>
+                    )}
                     {recordings.length === 0 && !loading.recordings && (
                       <p style={{ fontSize: 12, color: ts, textAlign: "center", paddingTop: 20 }}>No recordings loaded. Select a date range and fetch.</p>
                     )}

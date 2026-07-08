@@ -655,6 +655,8 @@ app.post("/api/claude", requireAuth, async (req, res) => {
       return s;
     });
   }
+  const hasZoomMCP = (body.mcp_servers || []).some(s => s.url?.includes("zoom.us"));
+
   const upstream = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -665,11 +667,35 @@ app.post("/api/claude", requireAuth, async (req, res) => {
     },
     body: JSON.stringify(body),
   });
+
   if (!upstream.ok) {
     const errText = await upstream.text();
     console.error(`Anthropic ${upstream.status}:`, errText);
     return res.status(upstream.status).send(errText);
   }
+
+  // Buffer Zoom MCP responses so we can log them for debugging
+  if (hasZoomMCP) {
+    const responseText = await upstream.text();
+    try {
+      const j = JSON.parse(responseText);
+      const summary = (j.content || []).map(b => {
+        if (b.type === "text")           return `[text] ${b.text?.slice(0, 400)}`;
+        if (b.type === "mcp_tool_use")   return `[mcp_tool_use] ${b.name} — ${JSON.stringify(b.input)?.slice(0, 300)}`;
+        if (b.type === "mcp_tool_result") return `[mcp_tool_result] ${JSON.stringify(b.content)?.slice(0, 500)}`;
+        return `[${b.type}]`;
+      }).join("\n");
+      console.log(`[Zoom MCP] stop_reason=${j.stop_reason} usage=${JSON.stringify(j.usage)}\n${summary}`);
+    } catch {
+      console.log(`[Zoom MCP] raw (${responseText.length} chars):`, responseText.slice(0, 600));
+    }
+    res.status(upstream.status);
+    upstream.headers.forEach((v, k) => {
+      if (!["content-encoding", "transfer-encoding", "connection"].includes(k)) res.setHeader(k, v);
+    });
+    return res.send(responseText);
+  }
+
   console.log(`Anthropic ${upstream.status} ok`);
   res.status(upstream.status);
   upstream.headers.forEach((v, k) => {
