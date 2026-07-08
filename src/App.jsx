@@ -4,7 +4,6 @@ const STORAGE_KEY = "dash_v5";
 const ASANA_MCP_URL = "https://mcp.asana.com/v2/mcp";
 const M365_MCP = "https://microsoft365.mcp.claude.com/mcp";
 const ZOOM_MCP = "https://mcp.zoom.us/mcp/zoom/streamable";
-const ZOOM_RECORDINGS_MCP = "https://mcp-us.zoom.us/mcp/zoom/streamable";
 const BLINKO_MCP = "http://35.225.239.191:1111/mcp";
 
 function getTodayISO() {
@@ -520,7 +519,7 @@ export default function App() {
         `Use recordings_list with userId="me". ` +
         `Return a JSON array of objects with fields: meetingId (string), topic (string), startTime (ISO string), duration (number, minutes). ` +
         `If there are no recordings return an empty array [].`,
-        [{ type: "url", url: ZOOM_RECORDINGS_MCP, name: "zoom-recordings-mcp" }]
+        [{ type: "url", url: ZOOM_MCP, name: "zoom-mcp" }]
       );
       setRecordings(Array.isArray(result.data) ? result.data : []);
     } catch (e) {
@@ -541,13 +540,13 @@ export default function App() {
         agentCall(
           `Get the AI meeting summary for Zoom meeting ID ${rec.meetingId}. ` +
           `Use get_meeting_assets. Return the summary text as the data field (a plain string).`,
-          [{ type: "url", url: ZOOM_RECORDINGS_MCP, name: "zoom-recordings-mcp" }]
+          [{ type: "url", url: ZOOM_MCP, name: "zoom-mcp" }]
         ),
         agentCall(
           `Get the transcript for Zoom meeting ID ${rec.meetingId}. ` +
           `Use get_recording_resource. Return the transcript text as the data field (a plain string), ` +
           `with speaker names on their own lines where available.`,
-          [{ type: "url", url: ZOOM_RECORDINGS_MCP, name: "zoom-recordings-mcp" }]
+          [{ type: "url", url: ZOOM_MCP, name: "zoom-mcp" }]
         ),
       ]);
       setRecordingAssets({
@@ -598,7 +597,7 @@ export default function App() {
         `If a matching meeting is found, call get_meeting_assets using its meeting_uuid to retrieve the AI summary. ` +
         `Return JSON with exactly these fields: { "found": true, "summary": "<full summary text>" } ` +
         `or { "found": false } if no recording or summary exists.`,
-        [{ type: "url", url: ZOOM_RECORDINGS_MCP, name: "zoom-recordings-mcp" }]
+        [{ type: "url", url: ZOOM_MCP, name: "zoom-mcp" }]
       );
 
       if (result.success && result.data?.found && result.data?.summary) {
