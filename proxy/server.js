@@ -650,7 +650,7 @@ app.post("/api/claude", requireAuth, async (req, res) => {
         return s;
       }
       if (s.url?.includes("asana") && ASANA_TOKEN) return { ...s, authorization_token: ASANA_TOKEN };
-      if (s.url?.includes("zoom") && ZOOM_TOKEN) return { ...s, authorization_token: ZOOM_TOKEN };
+      // Zoom MCP: auth handled by the Anthropic API via the user's Claude connector
       if ((s.url?.includes("blinko") || s.name === "blinko") && BLINKO_TOKEN) return { ...s, authorization_token:BLINKO_TOKEN };
       return s;
     });
