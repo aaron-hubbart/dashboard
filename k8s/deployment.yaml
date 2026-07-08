@@ -80,6 +80,17 @@ spec:
                   key: ASANA_TOKEN
             - name: AZURE_REDIRECT_URI
               value: "https://dashboard.es-sandbox.com/auth/callback"
+            - name: ZOOM_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: dashboard-secrets
+                  key: ZOOM_TOKEN
+            - name: ZOOM_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: dashboard-secrets
+                  key: ZOOM_WEBHOOK_SECRET
+                  optional: true
           resources:
             requests:
               cpu: 50m
