@@ -80,18 +80,12 @@ spec:
                   key: ASANA_TOKEN
             - name: AZURE_REDIRECT_URI
               value: "https://dashboard.es-sandbox.com/auth/callback"
-            - name: ZOOM_CLIENT_ID
+            - name: ZOOM_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: dashboard-secrets
-                  key: ZOOM_CLIENT_ID
-            - name: ZOOM_CLIENT_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: dashboard-secrets
-                  key: ZOOM_CLIENT_SECRET
-            - name: ZOOM_REDIRECT_URI
-              value: "https://dashboard.es-sandbox.com/auth/zoom/callback"
+                  key: ZOOM_TOKEN
+                  optional: true
             - name: ZOOM_WEBHOOK_SECRET
               valueFrom:
                 secretKeyRef:
