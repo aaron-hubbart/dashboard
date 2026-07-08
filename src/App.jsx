@@ -1551,16 +1551,26 @@ Be specific and practical. If you recognize the company, include relevant contex
 
             {/* ── Recordings sub-tab ── */}
             {meetingsSubTab === "recordings" && (() => {
-              const hasToken = adminStatus?.zoomTokenSet;
+              if (!zoomOAuthConnected) return (
+                <div style={{ ...card, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, minHeight: 180, textAlign: "center" }}>
+                  <i className="ti ti-brand-zoom" style={{ fontSize: 28, color: "#2D8CFF" }} />
+                  <div style={{ fontSize: 14, fontWeight: 500, color: tp }}>Connect Zoom</div>
+                  <div style={{ fontSize: 12, color: ts, maxWidth: 320 }}>Sign in with Zoom to browse cloud recordings, summaries, and transcripts via Claude.</div>
+                  <a href="/auth/zoom/login" style={{ ...btn(accent), textDecoration: "none", marginTop: 4 }}>
+                    <i className="ti ti-login" /> Connect Zoom
+                  </a>
+                </div>
+              );
               return (
                 <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
                   {/* Left: list */}
                   <div style={{ ...card, width: 280, flexShrink: 0, marginBottom: 0 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                       <span style={{ fontSize: 14, fontWeight: 600, color: tp }}>Cloud Recordings</span>
-                      {!hasToken && (
-                        <span style={{ fontSize: 11, color: "#ef4444" }}>ZOOM_TOKEN not set</span>
-                      )}
+                      <button style={{ ...btn(), fontSize: 11, padding: "2px 8px", color: ts }}
+                        onClick={async () => { await fetch("/auth/zoom/disconnect", { credentials: "include" }); setZoomOAuthConnected(false); setRecordings([]); setSelectedRecording(null); setRecordingAssets(null); }}>
+                        Disconnect
+                      </button>
                     </div>
                     <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
                       <div style={{ flex: 1 }}>
@@ -1577,15 +1587,10 @@ Be specific and practical. If you recognize the company, include relevant contex
                       </div>
                     </div>
                     <button style={{ ...btn(accent), width: "100%", justifyContent: "center", marginBottom: 12 }}
-                      onClick={fetchRecordings} disabled={loading.recordings || !hasToken}>
+                      onClick={fetchRecordings} disabled={loading.recordings}>
                       {loading.recordings ? <><Spinner /> Fetching…</> : <><i className="ti ti-refresh" /> Fetch Recordings</>}
                     </button>
-                    {!hasToken && (
-                      <p style={{ fontSize: 11, color: ts, margin: 0 }}>
-                        Add <code style={{ background: surface2, padding: "1px 4px", borderRadius: 3 }}>ZOOM_TOKEN</code> to the k8s secret to enable recordings.
-                      </p>
-                    )}
-                    {recordings.length === 0 && !loading.recordings && hasToken && (
+                    {recordings.length === 0 && !loading.recordings && (
                       <p style={{ fontSize: 12, color: ts, textAlign: "center", paddingTop: 20 }}>No recordings loaded. Select a date range and fetch.</p>
                     )}
                     {recordings.map(rec => (
