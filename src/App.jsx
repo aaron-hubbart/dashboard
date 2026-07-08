@@ -351,6 +351,15 @@ export default function App() {
     scheduleSave(data);
   }, [dark, goals, projects, meetings, meetingMeta, buckets, timeEntries, asanaMode, m365Mode, selectedPortfolios, portfolios, dismissedSuggestions, excludedCategories, outlookCategories, timezone, customers, customerColumns]);
 
+  // Zoom OAuth status check — must be above the auth-gate early returns.
+  useEffect(() => {
+    if (meetingsSubTab !== "recordings") return;
+    fetch("/auth/zoom/status", { credentials: "include" })
+      .then(r => r.json())
+      .then(d => setZoomOAuthConnected(d.connected || false))
+      .catch(() => {});
+  }, [meetingsSubTab]);
+
   // keep newEntry.date initialized to today on load
 
   // ── Theme ──────────────────────────────────────────────────
@@ -552,23 +561,6 @@ export default function App() {
       setLoad("recordingAssets", false);
     }
   }
-
-  // Zoom auth check — runs on recordings tab open and on window focus
-  // (window focus catches the OAuth redirect return without a page reload).
-  const checkZoomAuth = () => {
-    fetch("/auth/zoom/status", { credentials: "include" })
-      .then(r => r.json())
-      .then(d => setZoomOAuthConnected(d.connected || false))
-      .catch(() => {});
-  };
-  useEffect(() => {
-    if (meetingsSubTab !== "recordings") return;
-    checkZoomAuth();
-  }, [meetingsSubTab]);
-  useEffect(() => {
-    window.addEventListener("focus", checkZoomAuth);
-    return () => window.removeEventListener("focus", checkZoomAuth);
-  }, []);
 
   async function runStepZoom(meeting) {
     // Always do a live auth check so this works whether or not the Recordings tab was opened.
