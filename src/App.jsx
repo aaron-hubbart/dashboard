@@ -553,36 +553,101 @@ export default function App() {
     }
   }
 
-  // Check Zoom OAuth status on mount and when meetingsSubTab changes to recordings
-  useEffect(() => {
-    if (meetingsSubTab !== "recordings") return;
+  // Zoom auth check — runs on recordings tab open and on window focus
+  // (window focus catches the OAuth redirect return without a page reload).
+  const checkZoomAuth = () => {
     fetch("/auth/zoom/status", { credentials: "include" })
       .then(r => r.json())
       .then(d => setZoomOAuthConnected(d.connected || false))
-      .catch(() => setZoomOAuthConnected(false));
+      .catch(() => {});
+  };
+  useEffect(() => {
+    if (meetingsSubTab !== "recordings") return;
+    checkZoomAuth();
   }, [meetingsSubTab]);
+  useEffect(() => {
+    window.addEventListener("focus", checkZoomAuth);
+    return () => window.removeEventListener("focus", checkZoomAuth);
+  }, []);
 
   async function runStepZoom(meeting) {
-    // Zoom summaries are now auto-saved to Blinko via webhook when the AI summary is ready.
-    // This step lets you optionally link an existing Blinko note or Zoom URL to the meeting,
-    // or skip if the webhook will handle it.
-    setPanelStep(meeting.id, "zoom", {
-      status: "needs_input",
-      message: adminStatus?.zoomWebhookSet
-        ? "Zoom summaries auto-save via webhook. Paste a Blinko/Zoom URL to link now, or skip."
-        : "Paste a Zoom notes URL if available, or skip.",
-      candidates: [],
-      urlInput: ""
-    });
-    return "pending";
+    // Always do a live auth check so this works whether or not the Recordings tab was opened.
+    let isZoomConnected = zoomOAuthConnected;
+    try {
+      const r = await fetch("/auth/zoom/status", { credentials: "include" });
+      const d = await r.json();
+      isZoomConnected = d.connected || false;
+      if (isZoomConnected !== zoomOAuthConnected) setZoomOAuthConnected(isZoomConnected);
+    } catch { /* use cached state */ }
+
+    if (!isZoomConnected) {
+      setPanelStep(meeting.id, "zoom", {
+        status: "needs_input",
+        message: "Zoom not connected.",
+        zoomNotConnected: true,
+        candidates: [],
+        urlInput: "",
+      });
+      return "pending";
+    }
+
+    setPanelStep(meeting.id, "zoom", { status: "running", message: "Searching Zoom for this meeting…" });
+
+    try {
+      const meetingDate = (meeting.start || "").split("T")[0];
+      const before = new Date(meetingDate); before.setDate(before.getDate() - 1);
+      const after  = new Date(meetingDate); after.setDate(after.getDate() + 1);
+      const fromStr = before.toISOString().split("T")[0];
+      const toStr   = after.toISOString().split("T")[0];
+
+      const result = await agentCall(
+        `Find the Zoom recording for the meeting titled "${meeting.subject}" on ${meetingDate}. ` +
+        `Use search_meetings with q="${meeting.subject}" and from="${fromStr}T00:00:00Z" to="${toStr}T23:59:59Z". ` +
+        `If a matching meeting is found, call get_meeting_assets using its meeting_uuid to retrieve the AI summary. ` +
+        `Return JSON with exactly these fields: { "found": true, "summary": "<full summary text>" } ` +
+        `or { "found": false } if no recording or summary exists.`,
+        [{ type: "url", url: ZOOM_RECORDINGS_MCP, name: "zoom-recordings-mcp" }]
+      );
+
+      if (result.success && result.data?.found && result.data?.summary) {
+        const summary = String(result.data.summary);
+        setPanelStep(meeting.id, "zoom", {
+          status: "done",
+          message: "Zoom summary fetched via Claude.",
+          result: summary,
+        });
+        return summary;
+      }
+
+      // Recording exists but no summary, or not found — fall back to manual input
+      setPanelStep(meeting.id, "zoom", {
+        status: "needs_input",
+        message: "No Zoom recording found for this meeting. Paste a notes URL if you have one, or skip.",
+        zoomNotConnected: false,
+        candidates: [],
+        urlInput: "",
+      });
+      return "pending";
+
+    } catch (e) {
+      console.error("runStepZoom error:", e);
+      setPanelStep(meeting.id, "zoom", {
+        status: "needs_input",
+        message: "Zoom lookup failed. Paste a notes URL if you have one, or skip.",
+        zoomNotConnected: false,
+        candidates: [],
+        urlInput: "",
+      });
+      return "pending";
+    }
   }
 
-  // Called when user resolves a Zoom disambiguation
+  // Called when user resolves the Zoom fallback input (URL paste or skip)
   async function resolveZoomStep(meeting, resolution) {
     const meta = meetingMeta[meeting.id] || {};
 
     if (resolution.type === "skip") {
-      setPanelStep(meeting.id, "zoom", { status: "skipped", message: "Skipped — no Zoom notes.", result: null, candidates: null });
+      setPanelStep(meeting.id, "zoom", { status: "skipped", message: "Skipped — no Zoom notes.", result: null });
       const notes = await runStepNotes(meeting, null);
       const blinkoUrl = await runStepBlinko(meeting, notes);
       const asanaTaskIds = await runStepAsana(meeting, notes);
@@ -592,20 +657,11 @@ export default function App() {
 
     if (resolution.type === "url") {
       const zoomContext = `Zoom notes URL: ${resolution.url} (user-provided; treat as the source for this meeting's notes and decisions)`;
-      setPanelStep(meeting.id, "zoom", { status: "done", message: "URL recorded.", result: zoomContext, candidates: null });
+      setPanelStep(meeting.id, "zoom", { status: "done", message: "URL recorded.", result: zoomContext });
       const notes = await runStepNotes(meeting, zoomContext);
       const blinkoUrl = await runStepBlinko(meeting, notes);
       const asanaTaskIds = await runStepAsana(meeting, notes);
       setMeetingMeta(m => ({ ...m, [meeting.id]: { ...meta, processed: true, processedAt: new Date().toISOString(), hasZoomSummary: true, blinkoUrl, notes, asanaTaskIds, followUpsLogged: asanaTaskIds.length > 0 } }));
-      return;
-    }
-
-    if (resolution.type === "pick") {
-      const summary = await fetchZoomSummary(meeting, resolution.candidate);
-      const notes = await runStepNotes(meeting, summary);
-      const blinkoUrl = await runStepBlinko(meeting, notes);
-      const asanaTaskIds = await runStepAsana(meeting, notes);
-      setMeetingMeta(m => ({ ...m, [meeting.id]: { ...meta, processed: true, processedAt: new Date().toISOString(), hasZoomSummary: !!summary, blinkoUrl, notes, asanaTaskIds, followUpsLogged: asanaTaskIds.length > 0 } }));
       return;
     }
   }
@@ -1412,22 +1468,24 @@ Be specific and practical. If you recognize the company, include relevant contex
                           </div>
                           <p style={{ fontSize: 11, color, margin: "0 0 0 21px", lineHeight: 1.4 }}>{s.message}</p>
 
-                          {/* Zoom disambiguation UI */}
+                          {/* Zoom needs-input UI */}
                           {def.key === "zoom" && needsInput && (() => {
-                            const candidates = s.candidates || [];
+                            if (s.zoomNotConnected) return (
+                              <div style={{ marginLeft: 21, marginTop: 6, background: surface2, borderRadius: 6, padding: "8px 10px", fontSize: 11 }}>
+                                <p style={{ margin: "0 0 7px", color: ts }}>Connect Zoom to auto-fetch recordings and summaries.</p>
+                                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                  <a href="/auth/zoom/login" style={{ ...btn(accent), textDecoration: "none", fontSize: 11, padding: "4px 10px" }}>
+                                    <i className="ti ti-brand-zoom" /> Connect Zoom
+                                  </a>
+                                  <button onClick={() => resolveZoomStep(m, { type: "skip" })}
+                                    style={{ ...btn(), fontSize: 10, padding: "3px 8px", color: tt }}>
+                                    Skip
+                                  </button>
+                                </div>
+                              </div>
+                            );
                             return (
                               <div style={{ marginLeft: 21, marginTop: 6, background: surface2, borderRadius: 6, padding: "8px 10px", fontSize: 11 }}>
-                                {candidates.length > 0 && (
-                                  <div style={{ marginBottom: 8 }}>
-                                    {candidates.map((c, ci) => (
-                                      <button key={ci} onClick={() => resolveZoomStep(m, { type: "pick", candidate: c })}
-                                        style={{ display: "block", width: "100%", textAlign: "left", background: surface, border: `0.5px solid ${border}`, borderRadius: 5, padding: "5px 8px", marginBottom: 4, cursor: "pointer", color: tp }}>
-                                        <span style={{ fontSize: 12, fontWeight: 500, display: "block" }}>{c.topic || c.title}</span>
-                                        {(c.start_time || c.date) && <span style={{ fontSize: 10, color: ts }}>{(c.start_time || c.date)?.split("T")[0]}{c.duration ? ` · ${Math.round(c.duration)} min` : ""}</span>}
-                                      </button>
-                                    ))}
-                                  </div>
-                                )}
                                 <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
                                   <input
                                     placeholder="Paste Zoom notes URL…"
@@ -1444,7 +1502,7 @@ Be specific and practical. If you recognize the company, include relevant contex
                                 </div>
                                 <button onClick={() => resolveZoomStep(m, { type: "skip" })}
                                   style={{ ...btn(), fontSize: 10, padding: "2px 8px", width: "100%", justifyContent: "center", color: tt }}>
-                                  Skip — no notes exist for this meeting
+                                  Skip
                                 </button>
                               </div>
                             );
