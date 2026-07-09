@@ -185,17 +185,6 @@ export default function App() {
   // ── Zoom Recordings ────────────────────────────────────────
   const [meetingsSubTab, setMeetingsSubTab] = useState("calendar"); // "calendar" | "recordings"
   const [recordings, setRecordings] = useState([]);
-  const [recordingsRange, setRecordingsRange] = useState(() => {
-    const to = new Date();
-    const from = new Date();
-    from.setDate(from.getDate() - 30);
-    const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-    return { from: fmt(from), to: fmt(to) };
-  });
-  const [selectedRecording, setSelectedRecording] = useState(null);
-  const [recordingAssets, setRecordingAssets] = useState(null); // { summary, transcript }
-  const [recordingsAssetsTab, setRecordingsAssetsTab] = useState("summary");
-  const [recordingDebug, setRecordingDebug] = useState(null);
 
   // ── Admin ──────────────────────────────────────────────────
   const [adminStatus, setAdminStatus] = useState(null);
@@ -499,143 +488,17 @@ export default function App() {
     );
   }
 
-  // ── Zoom Recordings via MCP ────────────────────────────────
-  async function fetchRecordings() {
-    setLoad("recordings", true);
-    setRecordings([]);
-    setSelectedRecording(null);
-    setRecordingAssets(null);
-    setRecordingDebug(null);
-    try {
-      const raw = await callClaude(
-        [{ role: "user", content:
-          `List my Zoom cloud recordings from ${recordingsRange.from} to ${recordingsRange.to}. ` +
-          `Use recordings_list with userId="me". ` +
-          `Return a JSON array of objects with fields: meetingId (string), topic (string), startTime (ISO string), duration (number, minutes). ` +
-          `If there are no recordings return an empty array [].`
-        }],
-        `You are a productivity assistant. Execute the instruction using available MCP tools.\nRespond ONLY with valid JSON (no markdown fences, no preamble):\n{"success": true, "data": <result>} or {"success": false, "error": "reason"}`,
-        [{ type: "url", url: ZOOM_MCP, name: "zoom-mcp" }]
-      );
-
-      const blocks   = raw.content || [];
-      const textBlob = blocks.filter(b => b.type === "text").map(b => b.text).join("").trim();
-      const toolCalls = blocks.filter(b => b.type === "mcp_tool_use")
-        .map(b => `${b.name}(${JSON.stringify(b.input)})`);
-      const toolResults = blocks.filter(b => b.type === "mcp_tool_result")
-        .map(b => (b.content || []).map(c => c.text || JSON.stringify(c)).join("\n"));
-
-      let parsed = null;
-      let parseError = null;
-      try { parsed = JSON.parse(textBlob.replace(/\`\`\`json|\`\`\`/g, "").trim()); }
-      catch (e) { parseError = e.message; }
-
-      setRecordingDebug({
-        stopReason: raw.stop_reason,
-        blockTypes: blocks.map(b => b.type),
-        toolCalls,
-        toolResults,
-        textBlob: textBlob.slice(0, 800),
-        parsed,
-        parseError,
-        apiError: raw.error,
-      });
-
-      console.log("[Recordings] raw response:", raw);
-      console.log("[Recordings] tool calls:", toolCalls);
-      console.log("[Recordings] tool results:", toolResults);
-      console.log("[Recordings] text:", textBlob);
-      console.log("[Recordings] parsed:", parsed);
-
-      setRecordings(Array.isArray(parsed?.data) ? parsed.data : []);
-    } catch (e) {
-      console.error("Recordings fetch error:", e);
-      setRecordingDebug({ fetchError: e.message });
-      setRecordings([]);
-    } finally {
-      setLoad("recordings", false);
-    }
-  }
-
-  async function fetchRecordingAssets(rec) {
-    setSelectedRecording(rec);
-    setRecordingAssets(null);
-    setRecordingsAssetsTab("summary");
-    setLoad("recordingAssets", true);
-    try {
-      const [summaryResult, transcriptResult] = await Promise.all([
-        agentCall(
-          `Get the AI meeting summary for Zoom meeting ID ${rec.meetingId}. ` +
-          `Use get_meeting_assets. Return the summary text as the data field (a plain string).`,
-          [{ type: "url", url: ZOOM_MCP, name: "zoom-mcp" }]
-        ),
-        agentCall(
-          `Get the transcript for Zoom meeting ID ${rec.meetingId}. ` +
-          `Use get_recording_resource. Return the transcript text as the data field (a plain string), ` +
-          `with speaker names on their own lines where available.`,
-          [{ type: "url", url: ZOOM_MCP, name: "zoom-mcp" }]
-        ),
-      ]);
-      setRecordingAssets({
-        summary: (summaryResult.success && summaryResult.data) ? String(summaryResult.data) : "No summary available for this recording.",
-        transcript: (transcriptResult.success && transcriptResult.data) ? String(transcriptResult.data) : "No transcript available for this recording.",
-      });
-    } catch (e) {
-      console.error("Recording assets error:", e);
-      setRecordingAssets({ summary: "Failed to load summary.", transcript: "Failed to load transcript." });
-    } finally {
-      setLoad("recordingAssets", false);
-    }
-  }
 
   async function runStepZoom(meeting) {
-    setPanelStep(meeting.id, "zoom", { status: "running", message: "Searching Zoom for this meeting…" });
-
-    try {
-      const meetingDate = (meeting.start || "").split("T")[0];
-      const before = new Date(meetingDate); before.setDate(before.getDate() - 1);
-      const after  = new Date(meetingDate); after.setDate(after.getDate() + 1);
-      const fromStr = before.toISOString().split("T")[0];
-      const toStr   = after.toISOString().split("T")[0];
-
-      const result = await agentCall(
-        `Find the Zoom recording for the meeting titled "${meeting.subject}" on ${meetingDate}. ` +
-        `Use search_meetings with q="${meeting.subject}" and from="${fromStr}T00:00:00Z" to="${toStr}T23:59:59Z". ` +
-        `If a matching meeting is found, call get_meeting_assets using its meeting_uuid to retrieve the AI summary. ` +
-        `Return JSON with exactly these fields: { "found": true, "summary": "<full summary text>" } ` +
-        `or { "found": false } if no recording or summary exists.`,
-        [{ type: "url", url: ZOOM_MCP, name: "zoom-mcp" }]
-      );
-
-      if (result.success && result.data?.found && result.data?.summary) {
-        const summary = String(result.data.summary);
-        setPanelStep(meeting.id, "zoom", {
-          status: "done",
-          message: "Zoom summary fetched via Claude.",
-          result: summary,
-        });
-        return summary;
-      }
-
-      // Recording exists but no summary, or not found — fall back to manual input
-      setPanelStep(meeting.id, "zoom", {
-        status: "needs_input",
-        message: "No Zoom recording found for this meeting. Paste a notes URL if you have one, or skip.",
-        candidates: [],
-        urlInput: "",
-      });
-      return "pending";
-
-    } catch (e) {
-      console.error("runStepZoom error:", e);
-      setPanelStep(meeting.id, "zoom", {
-        status: "needs_input",
-        message: "Zoom lookup failed. Paste a notes URL if you have one, or skip.",
-        candidates: [],
-        urlInput: "",
-      });
-      return "pending";
-    }
+    setPanelStep(meeting.id, "zoom", {
+      status: "needs_input",
+      message: adminStatus?.zoomWebhookSet
+        ? "Zoom summaries auto-save via webhook. Paste a Blinko URL to link this meeting, or skip."
+        : "Paste a Zoom notes URL if available, or skip.",
+      candidates: [],
+      urlInput: "",
+    });
+    return "pending";
   }
 
   // Called when user resolves the Zoom fallback input (URL paste or skip)
@@ -1532,122 +1395,20 @@ Be specific and practical. If you recognize the company, include relevant contex
             )} {/* end calendar sub-tab */}
 
             {/* ── Recordings sub-tab ── */}
-            {meetingsSubTab === "recordings" && (() => {
-              if (adminStatus && !adminStatus.zoomTokenSet) return (
-                <div style={{ ...card, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, minHeight: 140, textAlign: "center" }}>
-                  <i className="ti ti-brand-zoom" style={{ fontSize: 22, color: ts }} />
-                  <div style={{ fontSize: 13, color: ts }}>Zoom not configured. Add <code style={{ background: surface2, padding: "1px 5px", borderRadius: 3, fontSize: 11 }}>ZOOM_TOKEN</code> to the k8s secret to enable recordings.</div>
+            {meetingsSubTab === "recordings" && (
+              <div style={{ ...card, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, minHeight: 180, textAlign: "center" }}>
+                <i className="ti ti-video-off" style={{ fontSize: 28, color: ts }} />
+                <div style={{ fontSize: 14, fontWeight: 500, color: tp }}>Cloud Recordings</div>
+                <div style={{ fontSize: 12, color: ts, maxWidth: 340, lineHeight: 1.6 }}>
+                  Zoom API access is required to browse recordings here.
+                  Meeting summaries are automatically saved to Blinko via the webhook when a meeting ends.
                 </div>
-              );
-              return (
-                <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-                  {/* Left: list */}
-                  <div style={{ ...card, width: 280, flexShrink: 0, marginBottom: 0 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                      <span style={{ fontSize: 14, fontWeight: 600, color: tp }}>Cloud Recordings</span>
-
-                    </div>
-                    <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 10, color: ts, marginBottom: 3 }}>FROM</div>
-                        <input type="date" value={recordingsRange.from}
-                          onChange={e => setRecordingsRange(r => ({ ...r, from: e.target.value }))}
-                          style={{ width: "100%", background: surface2, border: `1px solid ${border}`, color: tp, borderRadius: 5, padding: "4px 6px", fontSize: 12 }} />
-                      </div>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 10, color: ts, marginBottom: 3 }}>TO</div>
-                        <input type="date" value={recordingsRange.to}
-                          onChange={e => setRecordingsRange(r => ({ ...r, to: e.target.value }))}
-                          style={{ width: "100%", background: surface2, border: `1px solid ${border}`, color: tp, borderRadius: 5, padding: "4px 6px", fontSize: 12 }} />
-                      </div>
-                    </div>
-                    <button style={{ ...btn(accent), width: "100%", justifyContent: "center", marginBottom: 12 }}
-                      onClick={fetchRecordings} disabled={loading.recordings}>
-                      {loading.recordings ? <><Spinner /> Fetching…</> : <><i className="ti ti-refresh" /> Fetch Recordings</>}
-                    </button>
-                    {recordingDebug && (
-                      <details style={{ marginBottom: 10, fontSize: 11, color: ts }}>
-                        <summary style={{ cursor: "pointer", color: tt, userSelect: "none" }}>Debug info</summary>
-                        <div style={{ background: surface2, borderRadius: 5, padding: "8px 10px", marginTop: 6, lineHeight: 1.6, wordBreak: "break-all", maxHeight: 340, overflowY: "auto" }}>
-                          {recordingDebug.fetchError && <p style={{ color: "#ef4444", margin: "0 0 4px" }}>Fetch error: {recordingDebug.fetchError}</p>}
-                          {recordingDebug.apiError && <p style={{ color: "#ef4444", margin: "0 0 4px" }}>API error: {JSON.stringify(recordingDebug.apiError)}</p>}
-                          {recordingDebug.stopReason && <p style={{ margin: "0 0 4px" }}>stop_reason: <code>{recordingDebug.stopReason}</code></p>}
-                          {recordingDebug.blockTypes && <p style={{ margin: "0 0 4px" }}>blocks: {recordingDebug.blockTypes.join(", ") || "(none)"}</p>}
-                          {recordingDebug.toolCalls?.length > 0 && (
-                            <div style={{ margin: "4px 0" }}>
-                              <strong>Tool calls:</strong>
-                              {recordingDebug.toolCalls.map((t, i) => <pre key={i} style={{ margin: "2px 0", whiteSpace: "pre-wrap", fontSize: 10 }}>{t}</pre>)}
-                            </div>
-                          )}
-                          {recordingDebug.toolResults?.length > 0 && (
-                            <div style={{ margin: "4px 0" }}>
-                              <strong>Tool results:</strong>
-                              {recordingDebug.toolResults.map((r, i) => <pre key={i} style={{ margin: "2px 0", whiteSpace: "pre-wrap", fontSize: 10 }}>{r.slice(0, 600)}</pre>)}
-                            </div>
-                          )}
-                          {recordingDebug.textBlob && <div style={{ margin: "4px 0" }}><strong>Claude text:</strong><pre style={{ whiteSpace: "pre-wrap", fontSize: 10, margin: "2px 0" }}>{recordingDebug.textBlob}</pre></div>}
-                          {recordingDebug.parseError && <p style={{ color: "#f59e0b", margin: "4px 0 0" }}>Parse error: {recordingDebug.parseError}</p>}
-                        </div>
-                      </details>
-                    )}
-                    {recordings.length === 0 && !loading.recordings && (
-                      <p style={{ fontSize: 12, color: ts, textAlign: "center", paddingTop: 20 }}>No recordings loaded. Select a date range and fetch.</p>
-                    )}
-                    {recordings.map(rec => (
-                      <button key={rec.meetingId} onClick={() => fetchRecordingAssets(rec)}
-                        style={{ ...btn(), width: "100%", justifyContent: "flex-start", textAlign: "left", gap: 8, marginBottom: 4, padding: "8px 10px",
-                          ...(selectedRecording?.meetingId === rec.meetingId ? { background: accent + "22", borderColor: accent, color: accent } : {}) }}>
-                        <i className="ti ti-video" style={{ flexShrink: 0, fontSize: 13 }} />
-                        <span style={{ minWidth: 0 }}>
-                          <div style={{ fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{rec.topic || "Untitled"}</div>
-                          <div style={{ fontSize: 10, color: selectedRecording?.meetingId === rec.meetingId ? accent + "aa" : ts }}>
-                            {rec.startTime ? new Date(rec.startTime).toLocaleDateString() : ""}
-                            {rec.duration ? ` · ${rec.duration}m` : ""}
-                          </div>
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-
-                  {/* Right: assets */}
-                  {selectedRecording && (
-                    <div style={{ ...card, flex: 1, minWidth: 0, marginBottom: 0 }}>
-                      <div style={{ marginBottom: 12 }}>
-                        <div style={{ fontSize: 15, fontWeight: 600, color: tp, marginBottom: 2 }}>{selectedRecording.topic || "Recording"}</div>
-                        <div style={{ fontSize: 11, color: ts }}>
-                          {selectedRecording.startTime ? new Date(selectedRecording.startTime).toLocaleString() : ""}
-                          {selectedRecording.duration ? ` · ${selectedRecording.duration} min` : ""}
-                        </div>
-                      </div>
-                      <div style={{ display: "flex", gap: 4, borderBottom: `1px solid ${border}`, marginBottom: 12 }}>
-                        {["summary", "transcript"].map(t => (
-                          <button key={t} onClick={() => setRecordingsAssetsTab(t)}
-                            style={{ ...btn(), borderBottom: recordingsAssetsTab === t ? `2px solid ${accent}` : "2px solid transparent",
-                              borderRadius: "4px 4px 0 0", color: recordingsAssetsTab === t ? accent : ts, fontSize: 12, padding: "5px 12px" }}>
-                            {t === "summary" ? "Summary" : "Transcript"}
-                          </button>
-                        ))}
-                      </div>
-                      {loading.recordingAssets ? (
-                        <div style={{ display: "flex", justifyContent: "center", padding: 40 }}><Spinner /></div>
-                      ) : recordingAssets ? (
-                        <pre style={{ whiteSpace: "pre-wrap", fontSize: 12, lineHeight: 1.65, color: tp, margin: 0, fontFamily: "inherit", maxHeight: 480, overflowY: "auto" }}>
-                          {recordingsAssetsTab === "summary" ? recordingAssets.summary : recordingAssets.transcript}
-                        </pre>
-                      ) : (
-                        <p style={{ fontSize: 12, color: ts }}>Select a recording to view its summary and transcript.</p>
-                      )}
-                    </div>
-                  )}
-
-                  {!selectedRecording && recordings.length > 0 && (
-                    <div style={{ ...card, flex: 1, minWidth: 0, marginBottom: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      <p style={{ fontSize: 12, color: ts }}>Select a recording to view its summary and transcript.</p>
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
+                <a href="https://zoom.us/recording" target="_blank" rel="noopener noreferrer"
+                  style={{ ...btn(), fontSize: 12, textDecoration: "none" }}>
+                  <i className="ti ti-external-link" style={{ fontSize: 12 }} /> Open Zoom Recordings
+                </a>
+              </div>
+            )}
           </div>
         )}
 
