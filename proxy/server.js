@@ -6,6 +6,30 @@ import fs from "fs/promises";
 import path from "path";
 import crypto from "crypto";
 
+// ── Zoom Server-to-Server OAuth token cache ───────────────────────────────
+const zoomTokenCache = { token: null, expiresAt: 0 };
+
+async function getZoomToken() {
+  if (zoomTokenCache.token && Date.now() < zoomTokenCache.expiresAt - 60_000) {
+    return zoomTokenCache.token;
+  }
+  if (!ZOOM_ACCOUNT_ID || !ZOOM_CLIENT_ID || !ZOOM_CLIENT_SECRET) return null;
+  const credentials = Buffer.from(`${ZOOM_CLIENT_ID}:${ZOOM_CLIENT_SECRET}`).toString("base64");
+  const res = await fetch(
+    `https://zoom.us/oauth/token?grant_type=account_credentials&account_id=${ZOOM_ACCOUNT_ID}`,
+    { method: "POST", headers: { Authorization: `Basic ${credentials}` } }
+  );
+  const data = await res.json();
+  if (data.access_token) {
+    zoomTokenCache.token = data.access_token;
+    zoomTokenCache.expiresAt = Date.now() + (data.expires_in || 3600) * 1000;
+    console.log("[Zoom S2S] token refreshed, expires in", data.expires_in, "s");
+    return data.access_token;
+  }
+  console.error("[Zoom S2S] token fetch failed:", data);
+  return null;
+}
+
 const app = express();
 const PORT = 3001;
 const DATA_FILE = process.env.DATA_FILE || "/data/dashboard.json";
@@ -21,6 +45,9 @@ const {
   APP_VERSION = "dev",
   ASANA_TOKEN = "",
   ZOOM_TOKEN = "",
+  ZOOM_ACCOUNT_ID = "",
+  ZOOM_CLIENT_ID = "",
+  ZOOM_CLIENT_SECRET = "",
   BLINKO_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic3VwZXJhZG1pbiIsIm5hbWUiOiJhaHViYmFydCIsInN1YiI6IjEiLCJleHAiOjQ5MjI5MDM3ODIsImlhdCI6MTc2OTMwMzc4Mn0.BeCaFOP7Gb4FlaNbKuXYaRozy4EYgM7R20EvSQ3ByQE",
   BLINKO_URL = "http://35.225.239.191:1111",
   ZOOM_WEBHOOK_SECRET = "",
@@ -96,7 +123,7 @@ app.get("/api/admin/status", requireAuth, (req, res) => {
     skipAuth: SKIP_AUTH === "true",
     m365SignedIn: !!req.session.accessToken,
     asanaTokenSet: !!ASANA_TOKEN,
-    zoomTokenSet: !!ZOOM_TOKEN,
+    zoomTokenSet: !!(ZOOM_TOKEN || (ZOOM_ACCOUNT_ID && ZOOM_CLIENT_ID && ZOOM_CLIENT_SECRET)),
     blinkoTokenSet: !!BLINKO_TOKEN,
 	zoomWebhookSet: !!ZOOM_WEBHOOK_SECRET,
   });
@@ -650,7 +677,10 @@ app.post("/api/claude", requireAuth, async (req, res) => {
         return s;
       }
       if (s.url?.includes("asana") && ASANA_TOKEN) return { ...s, authorization_token: ASANA_TOKEN };
-      // Zoom MCP: auth handled by the Anthropic API via the user's Claude connector
+      if (s.url?.includes("zoom.us")) {
+        const zt = await getZoomToken() || ZOOM_TOKEN;
+        if (zt) return { ...s, authorization_token: zt };
+      }
       if ((s.url?.includes("blinko") || s.name === "blinko") && BLINKO_TOKEN) return { ...s, authorization_token:BLINKO_TOKEN };
       return s;
     });

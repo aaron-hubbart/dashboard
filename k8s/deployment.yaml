@@ -86,6 +86,24 @@ spec:
                   name: dashboard-secrets
                   key: ZOOM_TOKEN
                   optional: true
+            - name: ZOOM_ACCOUNT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: dashboard-secrets
+                  key: ZOOM_ACCOUNT_ID
+                  optional: true
+            - name: ZOOM_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: dashboard-secrets
+                  key: ZOOM_CLIENT_ID
+                  optional: true
+            - name: ZOOM_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: dashboard-secrets
+                  key: ZOOM_CLIENT_SECRET
+                  optional: true
             - name: ZOOM_WEBHOOK_SECRET
               valueFrom:
                 secretKeyRef:
