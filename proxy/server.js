@@ -24,6 +24,16 @@ const {
   BLINKO_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic3VwZXJhZG1pbiIsIm5hbWUiOiJhaHViYmFydCIsInN1YiI6IjEiLCJleHAiOjQ5MjI5MDM3ODIsImlhdCI6MTc2OTMwMzc4Mn0.BeCaFOP7Gb4FlaNbKuXYaRozy4EYgM7R20EvSQ3ByQE",
   BLINKO_URL = "http://35.225.239.191:1111",
   ZOOM_WEBHOOK_SECRET = "",
+  // Shared SSO with the daily-brief-v2 viewer (same host, different
+  // namespace) — see that repo's viewer/webapp/DEPLOYMENT.md "Shared SSO"
+  // section for the other half of this. Cross-namespace k8s Service DNS,
+  // not the public Ingress path, since this is a pod-to-pod call.
+  DAILY_BRIEF_SSO_VERIFY_URL = "http://daily-brief-viewer.daily-brief-v2.svc.cluster.local:8000/internal/sso/verify",
+  // Must match daily-brief-v2's INTERNAL_SSO_SECRET exactly — copied by
+  // hand into this app's own Secret, since Kubernetes Secrets don't cross
+  // namespaces. Leave unset to keep this app fully standalone (its own
+  // /auth/login remains the only way in, exactly as before this change).
+  INTERNAL_SSO_SECRET = "",
 
 } = process.env;
 
@@ -63,9 +73,64 @@ app.use((req, res, next) => {
   next();
 });
 
+// ── Shared SSO with daily-brief-v2 ──────────────────────────
+// This app keeps its own Microsoft OAuth flow below (/auth/login etc.) for
+// acquiring a Graph access token — Calendar and directory search need a
+// real Graph bearer token, and nothing here changes that. What changes is
+// the *login gate*: someone who already signed into the daily-brief-v2
+// viewer carries a shared `dashboard_sso` cookie (same host, so the browser
+// already attaches it to every /api request here) and should not have to
+// click through this app's own "Sign in with Microsoft" wall too. Routes
+// that specifically need Graph (calendar, directory search) already check
+// req.session.accessToken themselves regardless of what requireAuth does,
+// so they still correctly prompt for the dashboard's own sign-in.
+function getCookie(req, name) {
+  const header = req.headers.cookie;
+  if (!header) return null;
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() === name) return decodeURIComponent(part.slice(eq + 1).trim());
+  }
+  return null;
+}
+
+// Verify results are cached briefly per token — a single page load fires
+// several parallel /api requests, and this avoids a network round trip to
+// daily-brief-v2 for every one of them.
+const ssoVerifyCache = new Map(); // token -> { user, expiresAtMs }
+const SSO_VERIFY_CACHE_TTL_MS = 60_000;
+
+async function verifySsoCookie(req) {
+  if (!INTERNAL_SSO_SECRET) return null; // feature not configured — no-op
+  const token = getCookie(req, "dashboard_sso");
+  if (!token) return null;
+
+  const cached = ssoVerifyCache.get(token);
+  if (cached && cached.expiresAtMs > Date.now()) return cached.user;
+
+  try {
+    const url = `${DAILY_BRIEF_SSO_VERIFY_URL}?token=${encodeURIComponent(token)}`;
+    const r = await fetch(url, { headers: { "X-Internal-Auth": INTERNAL_SSO_SECRET } });
+    if (!r.ok) return null; // fail closed — never treat a verify error as authenticated
+    const data = await r.json();
+    if (!data.authenticated) return null;
+    ssoVerifyCache.set(token, { user: data.user, expiresAtMs: Date.now() + SSO_VERIFY_CACHE_TTL_MS });
+    return data.user;
+  } catch (e) {
+    console.error("SSO verify failed:", e.message);
+    return null;
+  }
+}
+
 // ── Auth guard ─────────────────────────────────────────────
-function requireAuth(req, res, next) {
+async function requireAuth(req, res, next) {
   if (SKIP_AUTH === "true" || req.session.accessToken) return next();
+  const ssoUser = await verifySsoCookie(req);
+  if (ssoUser) {
+    req.ssoUser = ssoUser;
+    return next();
+  }
   return res.status(401).json({ error: "Not authenticated" });
 }
 
@@ -151,8 +216,10 @@ app.get("/api/directory/search", requireAuth, async (req, res) => {
 });
 
 // ── Auth ───────────────────────────────────────────────────
-app.get("/auth/status", (req, res) => {
-  res.json({ authenticated: SKIP_AUTH === "true" || !!req.session.accessToken });
+app.get("/auth/status", async (req, res) => {
+  if (SKIP_AUTH === "true" || req.session.accessToken) return res.json({ authenticated: true });
+  const ssoUser = await verifySsoCookie(req);
+  res.json({ authenticated: !!ssoUser });
 });
 
 app.get("/auth/login", (req, res) => {
