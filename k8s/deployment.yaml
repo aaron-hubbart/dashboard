@@ -92,6 +92,22 @@ spec:
                   name: dashboard-secrets
                   key: ZOOM_WEBHOOK_SECRET
                   optional: true
+            # Cross-namespace k8s Service DNS for daily-brief-v2's internal
+            # verify endpoint — default matches its actual Service/namespace
+            # names, only override if those change.
+            - name: DAILY_BRIEF_SSO_VERIFY_URL
+              value: "http://daily-brief-viewer.daily-brief-v2.svc.cluster.local:8000/internal/sso/verify"
+            # optional: true — doesn't exist in the live Secret until it's
+            # copied over from daily-brief-v2's own INTERNAL_SSO_SECRET (see
+            # secret.template.yaml). Missing key just leaves shared SSO off
+            # (this app's own /auth/login keeps working as the only way in),
+            # rather than crash-looping the pod.
+            - name: INTERNAL_SSO_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: dashboard-secrets
+                  key: INTERNAL_SSO_SECRET
+                  optional: true
           resources:
             requests:
               cpu: 50m
